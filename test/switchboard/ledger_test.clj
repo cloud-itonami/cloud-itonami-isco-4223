@@ -1,0 +1,161 @@
+(ns switchboard.ledger-test
+  "The audit ledger's job is to say what the governor decided. These
+  tests pin the two things that job requires: that an escalated
+  proposal is distinguishable from a cleanly-passed one, and that the
+  ledger REFUSES to record an entry that misreports the decision."
+  (:require [clojure.test :refer [deftest is testing]]
+            [switchboard.actor :as actor]
+            [switchboard.advisor :as advisor]
+            [switchboard.ledger :as ledger]
+            [switchboard.store :as store]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-client! st {:client-id "client-1" :name "Kobo Trade"})
+    (store/register-line! st {:line-id "L-1" :client-id "client-1"
+                              :name "main-trunk"
+                              :extensions #{"101"}
+                              :do-not-call #{"+15550001111"}})
+    st))
+
+(defn- advisor-with-confidence
+  "An advisor that echoes the request at a fixed confidence, so a run
+  can be steered above or below `governor/confidence-floor` without
+  changing the op."
+  [confidence]
+  (reify advisor/Advisor
+    (-advise [_ _store request]
+      {:op (:op request)
+       :effect :propose
+       :line-id (:line-id request)
+       :destination-extension (:destination-extension request)
+       :outbound-number (:outbound-number request)
+       :stake :low
+       :confidence confidence
+       :rationale "fixed-confidence advisor"})))
+
+(def ^:private route-request
+  {:client-id "client-1" :op :approve-inbound-route :stake :low
+   :line-id "L-1" :destination-extension "101"})
+
+;; ---------------------------------------------------------------------------
+;; The regression: escalated-and-signed-off must not look like a clean pass.
+;; ---------------------------------------------------------------------------
+
+(deftest human-sign-off-is-visible-in-the-ledger
+  (testing "the SAME op, clean vs escalated, differ in the ledger"
+    (let [clean-store (fresh-store)
+          clean-graph (actor/build-graph {:store clean-store
+                                          :advisor (advisor-with-confidence 0.95)})
+          _ (actor/run-request! clean-graph route-request {} "clean")
+          clean-entry (first (store/ledger clean-store))
+
+          esc-store (fresh-store)
+          esc-graph (actor/build-graph {:store esc-store
+                                        :advisor (advisor-with-confidence 0.10)})
+          interrupted (actor/run-request! esc-graph route-request {} "escalated")]
+      ;; the low-confidence run really is the escalated path
+      (is (= :interrupted (:status interrupted))
+          "a below-floor confidence must interrupt for human sign-off")
+      (actor/approve! esc-graph "escalated")
+      (let [esc-entry (first (store/ledger esc-store))]
+        (is (= :commit (:disposition clean-entry)))
+        (is (= :commit-after-approval (:disposition esc-entry))
+            "the escalated commit must not be recorded as a clean pass")
+        (is (not (ledger/human-approved? clean-entry)))
+        (is (ledger/human-approved? esc-entry))
+        (is (not= (:disposition clean-entry) (:disposition esc-entry))
+            "the two dispositions are what makes the trail auditable")))))
+
+(deftest every-commit-entry-carries-the-governor-verdict
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})]
+    (actor/run-request! graph route-request {} "t")
+    (let [e (first (store/ledger st))]
+      (is (map? (:verdict e)) "the verdict is the evidence for the entry")
+      (is (false? (:hard? (:verdict e))))
+      (is (some? (:record e))))))
+
+(deftest a-hold-records-the-refusal-and-writes-no-record
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        dnc {:client-id "client-1" :op :approve-outbound-call :stake :low
+             :line-id "L-1" :outbound-number "+15550001111"}]
+    (actor/run-request! graph dnc {} "t")
+    (let [e (first (store/ledger st))]
+      (is (= :hold (:disposition e)))
+      (is (:hard? (:verdict e)))
+      (is (nil? (:record e)) "a hold wrote nothing, so it carries no record")
+      (is (empty? (store/records-of st "client-1"))))))
+
+(deftest escalated-commits-can-be-listed
+  (let [st (fresh-store)
+        clean (actor/build-graph {:store st :advisor (advisor-with-confidence 0.95)})
+        esc (actor/build-graph {:store st :advisor (advisor-with-confidence 0.10)})]
+    (actor/run-request! clean route-request {} "a")
+    (actor/run-request! esc route-request {} "b")
+    (actor/approve! esc "b")
+    (is (= 2 (count (store/ledger st))))
+    (is (= 1 (count (ledger/escalated-commits (store/ledger st))))
+        "exactly the run that needed a human is reported as needing one")))
+
+;; ---------------------------------------------------------------------------
+;; The refusals. Each is shown in BOTH directions: the admissible entry
+;; is accepted, the misreporting one is refused by its own named rule.
+;; ---------------------------------------------------------------------------
+
+(def ^:private passed  {:ok? true  :hard? false :escalate? false :violations [] :confidence 0.95})
+(def ^:private escal   {:ok? false :hard? false :escalate? true  :violations [] :confidence 0.10})
+(def ^:private refused {:ok? false :hard? true  :escalate? false
+                        :violations [{:rule :do-not-call-violation}] :confidence 0.95})
+(def ^:private a-record {:client-id "client-1" :op :approve-inbound-route})
+
+(defn- rules [e] (set (map :rule (ledger/violations e))))
+
+(deftest admits-the-three-well-formed-entries
+  (is (ledger/admissible? (ledger/entry :commit passed a-record)))
+  (is (ledger/admissible? (ledger/entry :commit-after-approval escal a-record)))
+  (is (ledger/admissible? (ledger/entry :hold refused))))
+
+(deftest refuses-a-commit-that-hides-an-escalation
+  (is (contains? (rules (ledger/entry :commit escal a-record))
+                 :escalation-not-recorded))
+  (testing "and the honest form of the same commit is admitted"
+    (is (ledger/admissible? (ledger/entry :commit-after-approval escal a-record)))))
+
+(deftest refuses-a-commit-that-invents-an-approval
+  (is (contains? (rules (ledger/entry :commit-after-approval passed a-record))
+                 :approval-not-required))
+  (testing "and the honest form of the same commit is admitted"
+    (is (ledger/admissible? (ledger/entry :commit passed a-record)))))
+
+(deftest refuses-a-commit-over-a-hard-refusal
+  (is (contains? (rules (ledger/entry :commit refused a-record))
+                 :committed-over-hard-refusal))
+  (is (contains? (rules (ledger/entry :commit-after-approval refused a-record))
+                 :committed-over-hard-refusal)))
+
+(deftest refuses-an-entry-with-no-verdict
+  (testing "the pre-2026-09-06 entry shape is exactly this refusal"
+    (is (contains? (rules {:disposition :commit :record a-record}) :no-verdict))))
+
+(deftest refuses-structurally-impossible-entries
+  (is (contains? (rules (ledger/entry :commit passed nil)) :commit-without-record))
+  (is (contains? (rules (ledger/entry :hold refused a-record)) :hold-with-record))
+  (is (contains? (rules (ledger/entry :shipped passed a-record)) :unknown-disposition)))
+
+(deftest append-is-fail-closed
+  (let [st (fresh-store)]
+    (testing "an admissible entry is appended"
+      (ledger/append! st (ledger/entry :commit passed a-record))
+      (is (= 1 (count (store/ledger st)))))
+    (testing "a misreporting entry throws and is NOT appended"
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (ledger/append! st (ledger/entry :commit escal a-record))))
+      (is (= 1 (count (store/ledger st)))
+          "the refused entry left no trace in the ledger"))
+    (testing "the thrown data names the rule that refused it"
+      (let [data (try (ledger/append! st (ledger/entry :commit escal a-record))
+                      nil
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= [:escalation-not-recorded] (mapv :rule (:violations data))))))))
