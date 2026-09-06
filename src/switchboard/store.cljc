@@ -16,7 +16,12 @@
              membership, not operator discretion).
     record — a committed operating record (approved routed call) —
              written ONLY via commit-record!.
-    ledger — append-only audit trail, commit or hold."
+    ledger — append-only audit trail, commit or hold. Write it via
+             `switchboard.ledger/append!`, not `append-ledger!`
+             directly: the ledger namespace is what refuses an entry
+             that misreports the governor's decision (an escalated
+             commit recorded as a clean pass, a commit over a HARD
+             refusal, an entry with no verdict at all)."
   )
 
 (defprotocol Store

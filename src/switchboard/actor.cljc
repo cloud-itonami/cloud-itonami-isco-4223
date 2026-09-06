@@ -16,11 +16,18 @@
 
   The unconditional invariant: the TelephoneSwitchboardOperatorsAdvisor can never
   directly commit a record the TelephoneSwitchboardOperatorsGovernor refuses —
-  every commit-record! call is gated behind `:decide`."
+  every commit-record! call is gated behind `:decide`.
+
+  Both terminal nodes write through `switchboard.ledger/append!`, which
+  carries the governor's verdict into the trail and refuses to record a
+  commit that misreports it — so a proposal that reached `:commit` only
+  because a human resumed the interrupted `:request-approval` thread is
+  recorded as `:commit-after-approval`, never as a clean `:commit`."
   (:require [langgraph.graph :as g]
             [langgraph.checkpoint :as cp]
             [switchboard.advisor :as advisor]
             [switchboard.governor :as governor]
+            [switchboard.ledger :as ledger]
             [switchboard.store :as store]))
 
 (defn build-graph
@@ -59,18 +66,22 @@
                                      :else :commit)}))
       (g/add-node :request-approval (fn [s] s))
       (g/add-node :commit
-                   (fn [{:keys [request proposal]}]
+                   (fn [{:keys [request proposal verdict]}]
                      (let [record {:client-id (:client-id request)
                                     :op (:op proposal)
                                     :line-id (:line-id proposal)
-                                    :payload proposal}]
+                                    :payload proposal}
+                           ;; The ledger names the disposition, so a proposal the
+                           ;; governor escalated cannot be recorded as a clean pass.
+                           disposition (ledger/commit-disposition verdict)]
                        (store/commit-record! store record)
-                       (store/append-ledger! store {:disposition :commit :record record})
+                       (ledger/append! store (ledger/entry disposition verdict record))
                        {:record record
-                        :audit [{:node :commit :record record}]})))
+                        :audit [{:node :commit :record record
+                                 :disposition disposition}]})))
       (g/add-node :hold
                    (fn [{:keys [verdict]}]
-                     (store/append-ledger! store {:disposition :hold :verdict verdict})
+                     (ledger/append! store (ledger/entry :hold verdict))
                      {:audit [{:node :hold :verdict verdict}]}))
       (g/set-entry-point :intake)
       (g/add-edge :intake :advise)
