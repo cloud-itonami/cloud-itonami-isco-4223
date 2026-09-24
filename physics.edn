@@ -1,0 +1,33 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; README: telephone switchboard operators (ISCO 4223) are a Wave-0 cognitive
+;; occupation (no robotics gate); blueprint.edn declares
+;; :itonami.blueprint/robotics true. The physical edge of a switchboard desk
+;; is the message and parcel side: sorting received parcels into the
+;; pigeonholes, and delivering message slips and small parcels to recipients.
+;; These cases declare that edge; call handling stays cognitive.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-4223"
+ :cases
+ [{:id :parcel-to-pigeonhole
+   :kind :manipulator
+   :procedure "arm lifts a received parcel from the desk into the recipient's pigeonhole"
+   :params {:l1-m 0.45 :l2-m 0.40 :m1-kg 3.5 :m2-kg 2.5
+            :from [0.55 0.05] :to [0.35 0.60] :duration-s 2.0 :steps 400}
+   :sweep {:param :payload-kg :values [0.2 0.5 1.0 3.0 6.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 60.0 :basis "estimate: continuous shoulder torque of a light collaborative arm (~5 kg class)"}
+   :boundary {:lo 0.05 :hi 20.0}}
+  {:id :message-delivery
+   :kind :transport
+   :procedure "robot delivers a message slip and small parcel from the switchboard desk to the recipient's office"
+   :params {:mass-kg 40.0 :payload-kg 2.0 :v-max-mps 1.0 :a-max-mps2 0.5
+            :brake-decel-mps2 0.8 :drive-force-n 80.0 :crr 0.02
+            :cog-height-m 0.55 :support-half-length-m 0.25}
+   :sweep {:param :distance-m :values [20.0 50.0 100.0 150.0 250.0]}
+   :quantity :cycle-time-s
+   :limit {:max 120.0 :basis "estimate: an urgent message should reach the recipient within 2 minutes"}
+   :boundary {:lo 5.0 :hi 600.0}}]}
