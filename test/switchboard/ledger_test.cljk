@@ -3,7 +3,7 @@
   tests pin the two things that job requires: that an escalated
   proposal is distinguishable from a cleanly-passed one, and that the
   ledger REFUSES to record an entry that misreports the decision."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [switchboard.actor :as actor]
             [switchboard.advisor :as advisor]
             [switchboard.ledger :as ledger]
