@@ -1,5 +1,5 @@
 (ns switchboard.governor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [switchboard.store :as store]
             [switchboard.governor :as governor]))
 

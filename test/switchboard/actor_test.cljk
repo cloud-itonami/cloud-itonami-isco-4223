@@ -1,5 +1,5 @@
 (ns switchboard.actor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [switchboard.actor :as actor]
             [switchboard.store :as store]))
 
