@@ -1,7 +1,7 @@
 (ns switchboard.ledger
   "Append-only audit ledger for the ISCO-08 4223 community telephone
   switchboard operators actor (itonami actor pattern, ADR-2607011000 /
-  CLAUDE.md Actors section). The third governance component alongside
+  AGENTS.md Actors section). The third governance component alongside
   `switchboard.governor` (which decides) and `switchboard.store`
   (which persists): this namespace owns **what a ledger entry means**
   and refuses to write one that misreports the governance decision.
